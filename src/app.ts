@@ -11,7 +11,7 @@ interface ISubscriber {
 interface IPublishSubscribeService {
   publish (event: IEvent): void
   subscribe (type: string, handler: ISubscriber): void
-  // unsubscribe ( /* Question 2 - build this feature */ );
+  unsubscribe (type: string, handler?: ISubscriber): void
 }
 
 interface IHandler {
@@ -41,6 +41,14 @@ class PublishSubscribeService implements IPublishSubscribeService {
     }
 
     this.handlers.push({type, handler} as IHandler)
+  }
+
+  unsubscribe(type: string, handler?: ISubscriber): void {
+    this.handlers = this.handlers.filter(it => {
+      return handler
+        ? it.type != type || it.handler.constructor.name != handler.constructor.name
+        : it.type != type
+    })
   }
 }
 
