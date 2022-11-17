@@ -5,7 +5,7 @@ interface IEvent {
 }
 
 interface ISubscriber {
-  handle(event: IEvent): void
+  handle(pubSubService: IPublishSubscribeService, event: IEvent): void
 }
 
 interface IPublishSubscribeService {
@@ -30,7 +30,7 @@ class PublishSubscribeService implements IPublishSubscribeService {
     this.handlers
       .filter(it => it.type === event.type())
       .forEach(({handler, type}) => {
-        handler.handle(event)
+        handler.handle(this, event)
       })
   }
 
@@ -84,6 +84,18 @@ class MachineRefillEvent implements IEvent {
   }
 }
 
+class MachineLowStockWarningEvent implements IEvent {
+  constructor(private readonly _machineId: string) {}
+
+  machineId(): string {
+    return this._machineId
+  }
+
+  type(): string {
+    return 'low-stock'
+  }
+}
+
 class MachineSaleSubscriber implements ISubscriber  {
   public machines: Machine[]
 
@@ -91,16 +103,31 @@ class MachineSaleSubscriber implements ISubscriber  {
     this.machines = machines
   }
 
-  handle(event: MachineSaleEvent): void {
+  handle(pubSubService: IPublishSubscribeService, event: MachineSaleEvent): void {
     console.log(`Sale machine ${event.machineId()} with ${event.getSoldQuantity()}`)
+
+    const minStockLevel = 3
+    let newStockIsLow = false
 
     for (let machine of this.machines) {
       if(machine.id === event.machineId()) {
-        console.log(`Machine ${machine.id} remainer stock ${machine.stockLevel} - ${event.getSoldQuantity()} = ${machine.stockLevel - event.getSoldQuantity()}`)
-        machine.stockLevel -= event.getSoldQuantity()
+        const newStockLevel = machine.stockLevel - event.getSoldQuantity()
+        const currentStockLevelIsLow = machine.stockLevel < minStockLevel
+        newStockIsLow = newStockLevel < minStockLevel
+
+        if(!currentStockLevelIsLow) {
+          console.log(`Machine ${machine.id} remainer stock ${machine.stockLevel} - ${event.getSoldQuantity()} = ${newStockLevel}`)
+          machine.stockLevel -= event.getSoldQuantity()
+        } else {
+          console.log(`Machine ${machine.id} remainer stock ${machine.stockLevel} - ${event.getSoldQuantity()} = ${newStockLevel} <- Ignore this sale`)
+        }
       } else {
         console.log(`Machine ${machine.id} remainer stock ${machine.stockLevel}`)
       }
+    }
+
+    if(newStockIsLow) {
+      pubSubService.publish(new MachineLowStockWarningEvent(event.machineId()))
     }
 
     console.log('')
@@ -114,7 +141,7 @@ class MachineRefillSubscriber implements ISubscriber {
     this.machines = machines
   }
   
-  handle(event: MachineRefillEvent): void {
+  handle(pubSubService: IPublishSubscribeService, event: MachineRefillEvent): void {
     console.log(`Refill machine ${event.machineId()} with ${event.getRefillQuantity()}`)
 
     for (let machine of this.machines) {
@@ -127,6 +154,21 @@ class MachineRefillSubscriber implements ISubscriber {
     }
     
     console.log('')
+  }
+}
+
+class LowStockWarningSubscriber implements ISubscriber  {
+  public machines: Machine[]
+
+  constructor (machines: Machine[]) {
+    this.machines = machines
+  }
+
+  handle(pubSubService: IPublishSubscribeService, event: MachineLowStockWarningEvent): void {
+    const machine = this.machines.find(it => it.id === event.machineId())
+    if(machine) {
+      console.log(`>>> Alert stock is low on machine ${machine.id} <<<`)
+    }
   }
 }
 
@@ -176,11 +218,15 @@ const eventGenerator = (): IEvent => {
   // create a machine refill event subscriber. inject the machines (all subscribers should do this)
   const refillSubscriber = new MachineRefillSubscriber(machines)
 
+  // create a machine refill event subscriber. inject the machines (all subscribers should do this)
+  const lowStockWarningSubscriber = new LowStockWarningSubscriber(machines)
+
   // create the PubSub service
   const pubSubService: IPublishSubscribeService = new PublishSubscribeService() // implement and fix this
 
   pubSubService.subscribe("sale", saleSubscriber)
   pubSubService.subscribe("refill", refillSubscriber)
+  pubSubService.subscribe("low-stock", lowStockWarningSubscriber)
 
   // create 5 random events
   const events = [1,2,3,4,5].map(i => eventGenerator())
