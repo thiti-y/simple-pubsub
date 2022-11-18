@@ -13,3 +13,19 @@ Note if subscribes subscribe after an event has already been published, they wil
 You may make any changes to this codebase as long as you ultimately build a Pub-Sub application capable of handling the existing machine sale and refill events.
 
 Please share your work using a GitHub repository with @proftom.
+
+# Get start
+
+1. Clone this repository to your machine and go to inside project directory
+
+2. Setup project with this command
+
+```
+npm install
+```
+
+3. Run project with this command
+
+```
+npm run start
+```
