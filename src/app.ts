@@ -5,6 +5,7 @@ interface IEvent {
 }
 
 interface ISubscriber {
+  isPending: boolean
   handle(pubSubService: IPublishSubscribeService, event: IEvent): void
 }
 
@@ -27,10 +28,15 @@ class PublishSubscribeService implements IPublishSubscribeService {
   publish(event: IEvent): void {
     if(this.handlers.length === 0) return
 
-    this.handlers
+    [...this.handlers]
       .filter(it => it.type === event.type())
+      .map(it => {
+        it.handler.isPending = true
+        return it
+      })
       .forEach(({handler, type}) => {
         handler.handle(this, event)
+        handler.isPending = false
       })
   }
 
@@ -84,91 +90,69 @@ class MachineRefillEvent implements IEvent {
   }
 }
 
-class MachineLowStockWarningEvent implements IEvent {
-  constructor(private readonly _machineId: string) {}
-
-  machineId(): string {
-    return this._machineId
-  }
-
-  type(): string {
-    return 'low-stock'
-  }
-}
-
 class MachineSaleSubscriber implements ISubscriber  {
-  public machines: Machine[]
+  constructor (private machines: Machine[]) { }
 
-  constructor (machines: Machine[]) {
-    this.machines = machines
-  }
+  public isPending: boolean = false
 
   handle(pubSubService: IPublishSubscribeService, event: MachineSaleEvent): void {
-    console.log(`Sale machine ${event.machineId()} with ${event.getSoldQuantity()}`)
+    const machine = this.machines.find(it => it.id === event.machineId())
+    if (!machine) return
 
-    const minStockLevel = 3
-    let newStockIsLow = false
-
-    for (let machine of this.machines) {
-      if(machine.id === event.machineId()) {
-        const newStockLevel = machine.stockLevel - event.getSoldQuantity()
-        const currentStockLevelIsLow = machine.stockLevel < minStockLevel
-        newStockIsLow = newStockLevel < minStockLevel
-
-        if(!currentStockLevelIsLow) {
-          console.log(`Machine ${machine.id} remainer stock ${machine.stockLevel} - ${event.getSoldQuantity()} = ${newStockLevel}`)
-          machine.stockLevel -= event.getSoldQuantity()
-        } else {
-          console.log(`Machine ${machine.id} remainer stock ${machine.stockLevel} - ${event.getSoldQuantity()} = ${newStockLevel} <- Ignore this sale`)
-        }
-      } else {
-        console.log(`Machine ${machine.id} remainer stock ${machine.stockLevel}`)
-      }
-    }
-
-    if(newStockIsLow) {
-      pubSubService.publish(new MachineLowStockWarningEvent(event.machineId()))
-    }
-
-    console.log('')
-  }
-}
-
-class MachineRefillSubscriber implements ISubscriber {
-  public machines: Machine[]
-
-  constructor (machines: Machine[]) {
-    this.machines = machines
-  }
-  
-  handle(pubSubService: IPublishSubscribeService, event: MachineRefillEvent): void {
-    console.log(`Refill machine ${event.machineId()} with ${event.getRefillQuantity()}`)
-
-    for (let machine of this.machines) {
-      if(machine.id === event.machineId()) {
-        console.log(`Machine ${machine.id} remainer stock ${machine.stockLevel} + ${event.getRefillQuantity()} = ${machine.stockLevel + event.getRefillQuantity()}`)
-        machine.stockLevel += event.getRefillQuantity()
-      } else {
-        console.log(`Machine ${machine.id} remainer stock ${machine.stockLevel}`)
-      }
-    }
-    
-    console.log('')
+    const previousStockLevel = machine.stockLevel
+    machine.stockLevel -= event.getSoldQuantity()
+    console.log(`[Sale event] [Machine sale] [Machine ${event.machineId()}] : Stock ${previousStockLevel} - ${event.getSoldQuantity()} = ${machine.stockLevel}`)
   }
 }
 
 class LowStockWarningSubscriber implements ISubscriber  {
-  public machines: Machine[]
+  constructor (
+    private machines: Machine[],
+    private saleSubscriber: MachineSaleSubscriber
+  ) { }
 
-  constructor (machines: Machine[]) {
-    this.machines = machines
+  public isPending: boolean = false
+
+  handle(pubSubService: IPublishSubscribeService, event: MachineSaleEvent): void {
+    const machine = this.machines.find(it => it.id === event.machineId())
+    if (!machine) return
+
+    const stockLevelAfterSale = this.saleSubscriber.isPending
+      ? machine.stockLevel - event.getSoldQuantity()
+      : machine.stockLevel
+
+    const isLowStock = this.checkStock(stockLevelAfterSale)
+    if (isLowStock) {
+      pubSubService.unsubscribe("sale", this.saleSubscriber)
+    }
+
+    console.log(`[Sale event] [Low stock warning] [Machine ${event.machineId()}] : ${isLowStock ? 'Stock is low' : 'Stock is not low'} | Current stock level ${stockLevelAfterSale}`)
   }
 
-  handle(pubSubService: IPublishSubscribeService, event: MachineLowStockWarningEvent): void {
+  public checkStock(stockLevelAfterSale: number) {
+    return stockLevelAfterSale < 3
+  }
+}
+
+class MachineRefillSubscriber implements ISubscriber {
+  constructor (
+    private machines: Machine[],
+    private saleSubscriber: MachineSaleSubscriber,
+    private lowStockWarningSubscriber: LowStockWarningSubscriber
+  ) { }
+
+  public isPending: boolean = false
+  
+  handle(pubSubService: IPublishSubscribeService, event: MachineRefillEvent): void {
     const machine = this.machines.find(it => it.id === event.machineId())
-    if(machine) {
-      console.log(`>>> Alert stock is low on machine ${machine.id} <<<`)
+    if (!machine) return
+
+    const previousStockLevel = machine.stockLevel
+    machine.stockLevel += event.getRefillQuantity()
+    if (!this.lowStockWarningSubscriber.checkStock(machine.stockLevel)) {
+      pubSubService.subscribe('sale', this.saleSubscriber)
     }
+    console.log(`[Refill event] [Machine refill] [Machine ${event.machineId()}] : Stock ${previousStockLevel} + ${event.getRefillQuantity()} = ${machine.stockLevel}`)
   }
 }
 
@@ -216,23 +200,21 @@ const eventGenerator = (): IEvent => {
   const saleSubscriber = new MachineSaleSubscriber(machines)
 
   // create a machine refill event subscriber. inject the machines (all subscribers should do this)
-  const refillSubscriber = new MachineRefillSubscriber(machines)
+  const lowStockWarningSubscriber = new LowStockWarningSubscriber(machines, saleSubscriber)
 
   // create a machine refill event subscriber. inject the machines (all subscribers should do this)
-  const lowStockWarningSubscriber = new LowStockWarningSubscriber(machines)
+  const refillSubscriber = new MachineRefillSubscriber(machines, saleSubscriber, lowStockWarningSubscriber)
 
   // create the PubSub service
   const pubSubService: IPublishSubscribeService = new PublishSubscribeService() // implement and fix this
 
   pubSubService.subscribe("sale", saleSubscriber)
+  pubSubService.subscribe("sale", lowStockWarningSubscriber)
   pubSubService.subscribe("refill", refillSubscriber)
-  pubSubService.subscribe("low-stock", lowStockWarningSubscriber)
 
   // create 5 random events
   const events = [1,2,3,4,5].map(i => eventGenerator())
 
   // publish the events
   events.map(e => pubSubService.publish(e))
-
-  console.log("Yes!")
 })()
